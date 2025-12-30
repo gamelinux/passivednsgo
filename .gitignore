@@ -1,0 +1,17 @@
+# Binaries
+bin/
+passivednsgo
+
+# Logs
+*.log
+*.json
+*.pcap
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS specific
+.DS_Store
+Thumbs.db

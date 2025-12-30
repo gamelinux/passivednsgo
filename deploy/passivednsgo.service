@@ -1,0 +1,28 @@
+[Unit]
+Description=PassiveDNS Go Packet Capture Service
+Documentation=https://github.com/gamelinux/passivednsgo
+# Ensure network is up before starting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Service execution
+Type=simple
+# We point to the YAML config we will build in Step 2
+ExecStart=/usr/local/bin/passivednsgo --config /etc/passivednsgo/passivednsgo.yaml
+# Automatically restart if it crashes
+Restart=on-failure
+RestartSec=5s
+
+# Security / Permissions
+# Packet capture usually requires root. 
+# Alternatively, you can run as a specific user if you grant CAP_NET_RAW capabilities.
+User=root
+Group=root
+
+# Resource Limits
+# High traffic capture needs open file descriptors
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

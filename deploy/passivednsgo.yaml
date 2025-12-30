@@ -1,0 +1,70 @@
+# /etc/passivednsgo/passivednsgo.yaml
+
+# ==========================================
+# Network Capture Settings
+# ==========================================
+
+# Interface to listen on (e.g., eth0, any)
+interface: "any"
+
+# Berkeley Packet Filter (BPF)
+# Standard: "((ip) or vlan) and port 53"
+bpf: "((ip) or vlan) and port 53"
+
+# Capture Threads (Go routines)
+# Increase this for high-traffic environments (e.g., 4-8)
+capturethreads: 1
+
+# Fanout Group ID (for AF_PACKET load balancing)
+fangroup: 42
+
+# Interface Buffer Size (in MB)
+buffersize: 16
+
+# Snapshot Length (Max bytes to capture per packet)
+snaplength: 1508
+
+# ==========================================
+# Logging Configuration
+# ==========================================
+
+# Log File Path
+logfile: "/var/log/passivednsgo.json"
+
+# Log Level: DEBUG, INFO, WARN, ERROR
+loglevel: "INFO"
+
+# Log Format: "json" (structured) or "text" (human-readable)
+logformat: "json"
+
+# File Rollover Size (Support G, M, T)
+rollover: "1G"
+
+# ==========================================
+# Processing & Caching
+# ==========================================
+
+# Unidirectional Mode (true = log queries/responses separately, no correlation)
+unidirectional: false
+
+# Enable Caching (Deduplicate repeated queries in memory)
+# Only works if unidirectional is false
+cache: true
+
+# Cache Timeouts
+# How often to print cached stats
+printtime: "12h"
+
+# How long to keep a record in cache without updates before deleting
+cachetime: "6h"
+
+# TCP/UDP Connection tracking timeout (cleanup stale flows)
+cxttimeout: "60s"
+
+# ==========================================
+# Performance Tuning
+# ==========================================
+
+# Internal Channel Buffer Size
+# Increase this if you see "dropped packet" logs or high memory usage
+channelbuffersize: 10000
