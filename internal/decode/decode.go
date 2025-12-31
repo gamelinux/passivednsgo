@@ -91,7 +91,6 @@ func DecodePacket(wg *sync.WaitGroup, id int, packetChan <-chan *capture.PacketO
 						var dnsDecoded []gopacket.LayerType
 						err := p.DecodeLayers(udp.Payload, &dnsDecoded)
 						if err == nil {
-							// FIX: Pass ints directly
 							SrcPort := int(udp.SrcPort)
 							DstPort := int(udp.DstPort)
 							parser.ParseDNS(po.Timestamp, VlanID, SrcIP, SrcPort, DstIP, DstPort, 17, *dnsLayer)

@@ -86,14 +86,13 @@ func CapturePackets(wg *sync.WaitGroup, id int, ifaceName string, packetChan cha
 		return err
 	}
 
-	// FIX: Added OptPollTimeout so we don't block forever
 	tpacket, err := afpacket.NewTPacket(
 		afpacket.TPacketVersion3,
 		afpacket.OptFrameSize(szFrame),
 		afpacket.OptBlockSize(szBlock),
 		afpacket.OptNumBlocks(numBlocks),
 		afpacket.OptAddVLANHeader(false),
-		afpacket.OptPollTimeout(100*time.Millisecond), // <--- THE FIX
+		afpacket.OptPollTimeout(100*time.Millisecond),
 		afpacket.SocketRaw,
 		afpacket.OptInterface(ifaceName))
 	if err != nil {
