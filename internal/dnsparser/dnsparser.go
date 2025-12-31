@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/gopacket/layers"
 	"passivednsgo/internal/config"
+	"passivednsgo/internal/dnsstrings" // ADDED IMPORT
 )
 
 type SevenTuple struct {
@@ -231,7 +232,7 @@ func (p *Parser) Unidirectional() {
 		}
 
 		if dns.QR {
-			pdns.Rc = dns.ResponseCode.String()
+			pdns.Rc = dnsstrings.DNSResponseCodeString(dns.ResponseCode)
 
 			var answers []string
 			var lastType string
@@ -251,7 +252,7 @@ func (p *Parser) Unidirectional() {
 			pdns.Ttl = lastTtl
 
 			if len(answers) == 0 && dns.ResponseCode != layers.DNSResponseCodeNoErr {
-				pdns.Answer = []string{dns.ResponseCode.String()}
+				pdns.Answer = []string{pdns.Rc} // Log the RC code as answer on error
 			}
 
 			p.LogChan <- pdns
@@ -281,7 +282,8 @@ func (p *Parser) Bidirectional() {
 		isErrorResponse := entry.answer.ResponseCode != 0
 		questionName := strings.ToLower(string(entry.query.Questions[0].Name))
 		questionType := entry.query.Questions[0].Type.String()
-		responseCode := entry.answer.ResponseCode.String()
+
+		responseCode := dnsstrings.DNSResponseCodeString(entry.answer.ResponseCode)
 
 		createPDNS := func(answers []string, answerType string, ttl uint32) PDNS {
 			return PDNS{
@@ -307,7 +309,9 @@ func (p *Parser) Bidirectional() {
 		}
 
 		if isErrorResponse {
+			// On error (NXDOMAIN), use QuestionType as AType (Standard practice)
 			pdnsRecord := createPDNS([]string{}, questionType, 0)
+
 			if config.C.Cache {
 				cacheKey := questionName + ":" + questionType + ":" + responseCode
 				p.processCacheEntry(cacheKey, pdnsRecord)
@@ -356,7 +360,6 @@ func (p *Parser) processCacheEntry(cacheKey string, pdnsRecord PDNS) {
 	if exists {
 		entry.Record.Cnt++
 		entry.Record.Lts = pdnsRecord.Lts
-
 		entry.Record.Src = pdnsRecord.Src
 		entry.Record.Sport = pdnsRecord.Sport
 		entry.Record.Dst = pdnsRecord.Dst
@@ -435,14 +438,12 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 	for {
 		select {
 		case <-cleanTimer.C:
-			// Threshold for Eviction
 			evictionThreshold := time.Now().Add(cachetime)
 			now := time.Now()
 
 			p.Cachedb.M.Lock()
 
 			for ukey, entry := range p.Cachedb.Key {
-				// A. Check Eviction (Delete)
 				if entry.LastSeen.Before(evictionThreshold) {
 					delta := entry.Record.Cnt - entry.PrintedCnt
 					if delta > 0 {
@@ -455,7 +456,6 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 					continue
 				}
 
-				// B. Check Heartbeat (Print & Keep)
 				timeSincePrint := now.Sub(entry.LastPrinted)
 				if timeSincePrint > printDuration {
 					delta := entry.Record.Cnt - entry.PrintedCnt
@@ -464,8 +464,6 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 						outRecord.Cnt = delta
 						outRecord.Pts = &now
 						p.LogChan <- outRecord
-
-						// Reset Delta tracking
 						entry.PrintedCnt = entry.Record.Cnt
 						entry.LastPrinted = now
 					}
@@ -473,7 +471,6 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 			}
 			p.Cachedb.M.Unlock()
 
-			// CXT Cleanup
 			ts := time.Now().Add(cxttimeout)
 			var cxtKeysToDelete []string
 
