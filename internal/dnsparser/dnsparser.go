@@ -340,10 +340,7 @@ func (p *Parser) Bidirectional() {
 
 				if config.C.Cache {
 					joinedAnswers := strings.Join(answers, ",")
-					cacheKey := fmt.Sprintf("%s|%s|%s|%s|%d|%d",
-						questionName, lastType, joinedAnswers,
-						pdnsRecord.Dst, pdnsRecord.Dport, pdnsRecord.Proto)
-
+					cacheKey := questionName + ":" + lastType + ":" + joinedAnswers
 					p.processCacheEntry(cacheKey, pdnsRecord, adjustedTimestamp)
 				} else {
 					p.LogChan <- pdnsRecord
@@ -365,9 +362,18 @@ func (p *Parser) processCacheEntry(cacheKey string, pdnsRecord PDNS, adjustedTim
 		entry.Record.Cnt++
 		entry.Record.Lts = pdnsRecord.Lts
 
-		// FIXED: Update the Source IP/Port to the latest one we saw
 		entry.Record.Src = pdnsRecord.Src
 		entry.Record.Sport = pdnsRecord.Sport
+		entry.Record.Dst = pdnsRecord.Dst
+		entry.Record.Dport = pdnsRecord.Dport
+		entry.Record.Proto = pdnsRecord.Proto
+		entry.Record.Vlan = pdnsRecord.Vlan
+		entry.Record.Qid = pdnsRecord.Qid
+		entry.Record.Qtm = pdnsRecord.Qtm
+
+		if pdnsRecord.Ttl > entry.Record.Ttl {
+			entry.Record.Ttl = pdnsRecord.Ttl
+		}
 
 		entry.LastSeen = time.Now()
 	} else {
