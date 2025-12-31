@@ -12,10 +12,12 @@ import (
 // setupTestConfig initializes the global config with safe defaults for testing
 func setupTestConfig() {
 	config.C = &config.Config{
-		Unidir:    false,
-		Cache:     false,
-		Printtime: "1s",
-		Cachetime: "1s",
+		Unidir:        false,
+		Cache:         false,
+		Printtime:     "1s",
+		Cachetime:     "1s",
+		CXTtimeout:    "1s",
+		CheckInterval: "1s",
 	}
 }
 
@@ -155,52 +157,129 @@ func TestBidirectional_Processing(t *testing.T) {
 	}
 }
 
-func TestCache_Deduplication(t *testing.T) {
+func TestCache_Aggregation_DifferentIPs(t *testing.T) {
+	// THIS TEST VERIFIES THE NEW "GENERAL CACHE" LOGIC
 	setupTestConfig()
-	config.C.Cache = true // Enable Cache!
+	config.C.Cache = true
 
 	var wg sync.WaitGroup
 	uniChan := make(chan DNSQoR, 10)
 	biChan := make(chan DNSQnR, 10)
-	logChan := make(chan PDNS, 100) // Large buffer to hold sequential messages
+	logChan := make(chan PDNS, 100)
 
 	parser := NewParser(&wg, uniChan, biChan, logChan)
 
 	wg.Add(1)
 	go parser.Bidirectional()
 
-	flow := SevenTuple{proto: 17, src: "1.2.3.4", sport: 123, dst: "5.6.7.8", dport: 53}
-	q := layers.DNS{Questions: []layers.DNSQuestion{{Name: []byte("cached.com"), Type: layers.DNSTypeA}}}
-	a := layers.DNS{ResponseCode: 0, Answers: []layers.DNSResourceRecord{{Name: []byte("cached.com"), Type: layers.DNSTypeA, IP: []byte{1, 1, 1, 1}, TTL: 300}}}
+	// Data Setup
+	q := layers.DNS{Questions: []layers.DNSQuestion{{Name: []byte("general.com"), Type: layers.DNSTypeA}}}
+	a := layers.DNS{ResponseCode: 0, Answers: []layers.DNSResourceRecord{{Name: []byte("general.com"), Type: layers.DNSTypeA, IP: []byte{1, 1, 1, 1}, TTL: 300}}}
 
-	pair := DNSQnR{flow: flow, query: q, answer: a, qts: time.Now(), ats: time.Now()}
+	// Packet 1: User A
+	flow1 := SevenTuple{proto: 17, src: "10.0.0.1", sport: 1001, dst: "8.8.8.8", dport: 53}
+	pair1 := DNSQnR{flow: flow1, query: q, answer: a, qts: time.Now(), ats: time.Now()}
 
-	// Send SAME record 3 times
-	biChan <- pair // Packet 1: Immediate Log (Cnt=1), Cache Printed=1, Total=1
-	biChan <- pair // Packet 2: Cache Update -> Total=2
-	biChan <- pair // Packet 3: Cache Update -> Total=3
+	// Packet 2: User B (Different IP/Port, SAME Query/Answer)
+	flow2 := SevenTuple{proto: 17, src: "192.168.0.55", sport: 9999, dst: "8.8.8.8", dport: 53}
+	pair2 := DNSQnR{flow: flow2, query: q, answer: a, qts: time.Now(), ats: time.Now()}
 
-	close(biChan) // Triggers FlushDB -> Delta = Total(3) - Printed(1) = 2. Emits Cnt=2.
+	// Send Packet 1 -> Should print immediately (Count 1)
+	biChan <- pair1
+
+	// Send Packet 2 -> Should NOT print, but increment cache count to 2
+	// AND update the Source IP in the cache to 192.168.0.55
+	biChan <- pair2
+
+	close(biChan) // Triggers Flush
 	wg.Wait()
 
-	// Step 1: Check for Immediate Output (Cnt=1)
+	// --- Verification ---
+
+	// 1. First Output (Immediate)
 	select {
 	case pdns := <-logChan:
 		if pdns.Cnt != 1 {
-			t.Errorf("First packet should have Count 1 (Immediate), got %d", pdns.Cnt)
+			t.Errorf("Packet 1: Expected Count 1, got %d", pdns.Cnt)
+		}
+		if pdns.Src != "10.0.0.1" {
+			t.Errorf("Packet 1: Expected Src 10.0.0.1, got %s", pdns.Src)
 		}
 	default:
-		t.Fatal("Expected immediate output for first packet, got nothing")
+		t.Fatal("Packet 1: No output received")
 	}
 
-	// Step 2: Check for Flushed Output (Cnt=2)
-	// We sent 3 total. We printed 1. The remaining delta is 2.
+	// 2. Second Output (Flush/Delta)
 	select {
 	case pdns := <-logChan:
-		if pdns.Cnt != 2 {
-			t.Errorf("Flushed packet should have aggregated Count 2 (Delta), got %d", pdns.Cnt)
+		// We expect the Delta (Total 2 - Printed 1 = 1)
+		// But crucial check: Did the Source IP update to the latest packet?
+		if pdns.Cnt != 1 {
+			t.Errorf("Packet 2 (Flush): Expected Delta Count 1, got %d", pdns.Cnt)
+		}
+		if pdns.Src != "192.168.0.55" {
+			t.Errorf("Packet 2 (Flush): Expected Source IP to update to 192.168.0.55, got %s", pdns.Src)
 		}
 	default:
-		t.Fatal("Expected flushed aggregated packet (Delta), got nothing")
+		t.Fatal("Packet 2 (Flush): No output received")
+	}
+}
+
+func TestCache_Heartbeat(t *testing.T) {
+	// Tests the Heartbeat logic by manipulating the timestamp manually
+	setupTestConfig()
+	config.C.Cache = true
+	config.C.Printtime = "1s" // Short heartbeat
+
+	var wg sync.WaitGroup
+	uniChan := make(chan DNSQoR, 10)
+	biChan := make(chan DNSQnR, 10)
+	logChan := make(chan PDNS, 100)
+
+	parser := NewParser(&wg, uniChan, biChan, logChan)
+
+	// Don't run the full bidirectional routine to avoid race conditions with our manual manipulation
+	// We will manually invoke the cache logic
+
+	// 1. Create Entry
+	pdns := PDNS{Query: "heartbeat.com", Cnt: 1} // simplified
+
+	// 2. Insert into Cache (First seen)
+	cacheKey := "test-key"
+	parser.processCacheEntry(cacheKey, pdns) // Logs 1, Printed=1
+
+	// Consume the first log
+	<-logChan
+
+	// 3. Update Cache (Traffic continues)
+	parser.processCacheEntry(cacheKey, pdns) // Count=2, Printed=1
+	parser.processCacheEntry(cacheKey, pdns) // Count=3, Printed=1
+
+	// 4. Hack the "LastPrinted" time to simulate 2 hours passing
+	parser.Cachedb.M.Lock()
+	entry := parser.Cachedb.Key[cacheKey]
+	entry.LastPrinted = time.Now().Add(-2 * time.Hour) // Way past PrintTime (1s)
+	parser.Cachedb.M.Unlock()
+
+	// 5. Run DBMaintenance manually once
+	// We need a stopper channel
+	stop := make(chan bool)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		stop <- true
+	}()
+
+	wg.Add(1)
+	parser.DBMaintenance(stop)
+
+	// 6. Verify we got the Heartbeat Log
+	select {
+	case log := <-logChan:
+		// We had 3 total, printed 1. Delta is 2.
+		if log.Cnt != 2 {
+			t.Errorf("Heartbeat: Expected Delta Count 2, got %d", log.Cnt)
+		}
+	default:
+		t.Fatal("Heartbeat: Expected log entry after maintenance, got none")
 	}
 }
