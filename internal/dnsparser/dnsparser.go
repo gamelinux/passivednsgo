@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/gopacket/layers"
 	"passivednsgo/internal/config"
-	"passivednsgo/internal/dnsstrings"
 )
 
 type SevenTuple struct {
@@ -18,8 +18,8 @@ type SevenTuple struct {
 	qid   uint16
 	src   string
 	dst   string
-	sport int // Changed from string
-	dport int // Changed from string
+	sport int
+	dport int
 	vlan  uint16
 }
 
@@ -42,7 +42,7 @@ type DNSQoR struct {
 type PDNS struct {
 	Query  string     `json:"query,omitempty"`
 	Qtype  string     `json:"qtype,omitempty"`
-	Answer string     `json:"answer,omitempty"`
+	Answer []string   `json:"answer,omitempty"`
 	Atype  string     `json:"atype,omitempty"`
 	Qid    uint16     `json:"qid,omitempty"`
 	Rc     string     `json:"rc,omitempty"`
@@ -52,12 +52,18 @@ type PDNS struct {
 	Lts    *time.Time `json:"lts,omitempty"`
 	Pts    *time.Time `json:"pts,omitempty"`
 	Src    string     `json:"src_ip"`
-	Sport  int        `json:"src_port"` // Changed from string
+	Sport  int        `json:"src_port"`
 	Dst    string     `json:"dst_ip"`
-	Dport  int        `json:"dst_port"` // Changed from string
+	Dport  int        `json:"dst_port"`
 	Proto  int        `json:"proto"`
 	Vlan   uint16     `json:"vlan"`
 	Qtm    float64    `json:"qtm,omitempty"`
+}
+
+type CacheEntry struct {
+	Record     PDNS
+	LastSeen   time.Time
+	PrintedCnt int
 }
 
 type cxtdb struct {
@@ -66,7 +72,7 @@ type cxtdb struct {
 }
 
 type dnsdb struct {
-	Key map[string]PDNS
+	Key map[string]*CacheEntry
 	M   sync.RWMutex
 }
 
@@ -85,12 +91,11 @@ func NewParser(wg *sync.WaitGroup, uniChan chan DNSQoR, biChan chan DNSQnR, logC
 		BidirectionalChan:  biChan,
 		LogChan:            logChan,
 		cxt:                cxtdb{cxt: make(map[string]DNSQnR)},
-		Cachedb:            dnsdb{Key: make(map[string]PDNS)},
+		Cachedb:            dnsdb{Key: make(map[string]*CacheEntry)},
 		wg:                 wg,
 	}
 }
 
-// Updated signature: sport and dport are now int
 func (p *Parser) ParseDNS(timestamp time.Time, vlan uint16, src string, sport int, dst string, dport int, proto int, dns layers.DNS) {
 	if dns.OpCode != layers.DNSOpCodeQuery {
 		return
@@ -119,13 +124,11 @@ func (p *Parser) ParseDNS(timestamp time.Time, vlan uint16, src string, sport in
 	}
 
 	var ukey string
-	if dns.QR { // Response from server
-		// Updated format string to use %d for ports
+	if dns.QR {
 		ukey = fmt.Sprintf("%d%d%d%d%s%s%d", dns.ID, proto, dport, sport, dst, src, vlan)
 		tmpflow.src, tmpflow.dst = dst, src
 		tmpflow.sport, tmpflow.dport = dport, sport
-	} else { // Request from client
-		// Updated format string to use %d for ports
+	} else {
 		ukey = fmt.Sprintf("%d%d%d%d%s%s%d", dns.ID, proto, sport, dport, src, dst, vlan)
 	}
 
@@ -173,6 +176,41 @@ func (p *Parser) ParseDNS(timestamp time.Time, vlan uint16, src string, sport in
 	}
 }
 
+func formatAnswer(ans layers.DNSResourceRecord) (string, string) {
+	var ansStr string
+	var ansType string
+
+	ansType = ans.Type.String()
+
+	switch ans.Type {
+	case layers.DNSTypeA, layers.DNSTypeAAAA:
+		ansStr = ans.IP.String()
+	case layers.DNSTypeCNAME, layers.DNSTypeNS, layers.DNSTypePTR:
+		ansStr = string(ans.CNAME)
+		if ansStr == "" {
+			ansStr = string(ans.NS)
+		}
+		if ansStr == "" {
+			ansStr = string(ans.PTR)
+		}
+	case layers.DNSTypeMX:
+		ansStr = fmt.Sprintf("%d %s", ans.MX.Preference, string(ans.MX.Name))
+	case layers.DNSTypeTXT:
+		var parts []string
+		for _, b := range ans.TXTs {
+			parts = append(parts, string(b))
+		}
+		ansStr = strings.Join(parts, "")
+	case layers.DNSTypeSOA:
+		ansStr = fmt.Sprintf("%s %s %d", string(ans.SOA.MName), string(ans.SOA.RName), ans.SOA.Serial)
+	default:
+		if len(ans.Data) > 0 {
+			ansStr = fmt.Sprintf("DATA[%d bytes]", len(ans.Data))
+		}
+	}
+	return ansStr, ansType
+}
+
 func (p *Parser) Unidirectional() {
 	defer p.wg.Done()
 	slog.Info("Unidirectional Routine Started...")
@@ -183,8 +221,8 @@ func (p *Parser) Unidirectional() {
 		pdns := PDNS{
 			Qid:   dns.ID,
 			Src:   entry.flow.src,
-			Sport: entry.flow.sport, // int assignment
-			Dport: entry.flow.dport, // int assignment
+			Sport: entry.flow.sport,
+			Dport: entry.flow.dport,
 			Dst:   entry.flow.dst,
 			Proto: entry.flow.proto,
 			Vlan:  entry.flow.vlan,
@@ -192,22 +230,34 @@ func (p *Parser) Unidirectional() {
 		}
 
 		if dns.QR {
-			pdns.Rc = dnsstrings.DNSResponseCodeString(dns.ResponseCode)
-			for _, answer := range dns.Answers {
-				pdns.Ttl = answer.TTL
-				pdns.Atype = dnsstrings.DNSTypeString(answer.Type)
+			pdns.Rc = dns.ResponseCode.String()
 
-				if dns.ResponseCode == layers.DNSResponseCodeNoErr {
-					pdns.Answer = dnsstrings.DNSResourceRecordString(answer)
-				} else {
-					pdns.Answer = string(answer.Name)
+			var answers []string
+			var lastType string
+			var lastTtl uint32
+
+			for _, answer := range dns.Answers {
+				str, t := formatAnswer(answer)
+				if str != "" {
+					answers = append(answers, str)
 				}
-				p.LogChan <- pdns
+				lastType = t
+				lastTtl = answer.TTL
 			}
+
+			pdns.Answer = answers
+			pdns.Atype = lastType
+			pdns.Ttl = lastTtl
+
+			if len(answers) == 0 && dns.ResponseCode != layers.DNSResponseCodeNoErr {
+				pdns.Answer = []string{dns.ResponseCode.String()}
+			}
+
+			p.LogChan <- pdns
 		} else {
 			if len(dns.Questions) > 0 {
 				pdns.Query = string(dns.Questions[0].Name)
-				pdns.Qtype = dnsstrings.DNSTypeString(dns.Questions[0].Type)
+				pdns.Qtype = dns.Questions[0].Type.String()
 				p.LogChan <- pdns
 			}
 		}
@@ -235,13 +285,14 @@ func (p *Parser) Bidirectional() {
 
 		isErrorResponse := entry.answer.ResponseCode != 0
 		questionName := strings.ToLower(string(entry.query.Questions[0].Name))
-		questionType := dnsstrings.DNSTypeString(entry.query.Questions[0].Type)
-		responseCode := dnsstrings.DNSResponseCodeString(entry.answer.ResponseCode)
+		questionType := entry.query.Questions[0].Type.String()
+		responseCode := entry.answer.ResponseCode.String()
 
-		createPDNS := func(answer string, answerType string, ttl uint32) PDNS {
+		createPDNS := func(answers []string, answerType string, ttl uint32) PDNS {
 			return PDNS{
 				Query:  questionName,
-				Answer: answer,
+				Qtype:  questionType,
+				Answer: answers,
 				Atype:  answerType,
 				Rc:     responseCode,
 				Ttl:    ttl,
@@ -250,8 +301,8 @@ func (p *Parser) Bidirectional() {
 				Lts:    &entry.ats,
 				Qid:    entry.flow.qid,
 				Src:    entry.flow.src,
-				Sport:  entry.flow.sport, // int assignment
-				Dport:  entry.flow.dport, // int assignment
+				Sport:  entry.flow.sport,
+				Dport:  entry.flow.dport,
 				Dst:    entry.flow.dst,
 				Proto:  entry.flow.proto,
 				Vlan:   entry.flow.vlan,
@@ -261,7 +312,7 @@ func (p *Parser) Bidirectional() {
 		}
 
 		if isErrorResponse {
-			pdnsRecord := createPDNS(responseCode, questionType, 0)
+			pdnsRecord := createPDNS([]string{}, questionType, 0)
 			if config.C.Cache {
 				cacheKey := questionName + ":" + questionType + ":" + responseCode
 				p.processCacheEntry(cacheKey, pdnsRecord, adjustedTimestamp)
@@ -270,15 +321,29 @@ func (p *Parser) Bidirectional() {
 			}
 
 		} else {
-			for _, answer := range entry.answer.Answers {
-				answerStr := dnsstrings.DNSResourceRecordString(answer)
-				answerType := dnsstrings.DNSTypeString(answer.Type)
-				ttl := answer.TTL
+			var answers []string
+			var lastTtl uint32
+			var lastType string
 
-				pdnsRecord := createPDNS(answerStr, answerType, ttl)
+			for _, answer := range entry.answer.Answers {
+				ansStr, ansType := formatAnswer(answer)
+				if ansStr != "" {
+					answers = append(answers, ansStr)
+					lastType = ansType
+					lastTtl = answer.TTL
+				}
+			}
+			if len(answers) > 0 {
+				sort.Strings(answers)
+
+				pdnsRecord := createPDNS(answers, lastType, lastTtl)
 
 				if config.C.Cache {
-					cacheKey := questionName + ":" + answerType + ":" + answerStr
+					joinedAnswers := strings.Join(answers, ",")
+					cacheKey := fmt.Sprintf("%s|%s|%s|%s|%d|%d",
+						questionName, lastType, joinedAnswers,
+						pdnsRecord.Dst, pdnsRecord.Dport, pdnsRecord.Proto)
+
 					p.processCacheEntry(cacheKey, pdnsRecord, adjustedTimestamp)
 				} else {
 					p.LogChan <- pdnsRecord
@@ -291,47 +356,47 @@ func (p *Parser) Bidirectional() {
 }
 
 func (p *Parser) processCacheEntry(cacheKey string, pdnsRecord PDNS, adjustedTimestamp time.Time) {
-	p.Cachedb.M.RLock()
-	cachedEntry, exists := p.Cachedb.Key[cacheKey]
-	p.Cachedb.M.RUnlock()
+	p.Cachedb.M.Lock()
+	defer p.Cachedb.M.Unlock()
+
+	entry, exists := p.Cachedb.Key[cacheKey]
 
 	if exists {
-		pdnsRecord.Cnt = cachedEntry.Cnt + 1
-		pdnsRecord.Fts = cachedEntry.Fts
-		pdnsRecord.Pts = cachedEntry.Pts
+		entry.Record.Cnt++
+		entry.Record.Lts = pdnsRecord.Lts
 
-		if pdnsRecord.Ttl < cachedEntry.Ttl {
-			pdnsRecord.Ttl = cachedEntry.Ttl
-		}
+		// FIXED: Update the Source IP/Port to the latest one we saw
+		entry.Record.Src = pdnsRecord.Src
+		entry.Record.Sport = pdnsRecord.Sport
 
-		if cachedEntry.Pts.Before(adjustedTimestamp) {
-			now := time.Now()
-			pdnsRecord.Pts = &now
-			p.LogChan <- pdnsRecord
-		}
+		entry.LastSeen = time.Now()
 	} else {
 		p.LogChan <- pdnsRecord
+		p.Cachedb.Key[cacheKey] = &CacheEntry{
+			Record:     pdnsRecord,
+			LastSeen:   time.Now(),
+			PrintedCnt: 1,
+		}
 	}
-
-	p.Cachedb.M.Lock()
-	p.Cachedb.Key[cacheKey] = pdnsRecord
-	p.Cachedb.M.Unlock()
 }
 
 func (p *Parser) FlushDB() {
-	p.Cachedb.M.RLock()
+	p.Cachedb.M.Lock()
+	defer p.Cachedb.M.Unlock()
+
 	slog.Debug("Flushing CacheDB", "count", len(p.Cachedb.Key))
 
-	for ukey, pdns := range p.Cachedb.Key {
-		p.Cachedb.M.RUnlock()
-		p.Cachedb.M.Lock()
+	for ukey, entry := range p.Cachedb.Key {
+		delta := entry.Record.Cnt - entry.PrintedCnt
+		if delta > 0 {
+			outRecord := entry.Record
+			outRecord.Cnt = delta
+			now := time.Now()
+			outRecord.Pts = &now
+			p.LogChan <- outRecord
+		}
 		delete(p.Cachedb.Key, ukey)
-		p.Cachedb.M.Unlock()
-		p.Cachedb.M.RLock()
-
-		p.LogChan <- pdns
 	}
-	p.Cachedb.M.RUnlock()
 }
 
 func (p *Parser) DBMaintenance(stopChan <-chan bool) {
@@ -350,43 +415,48 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 		return
 	}
 
-	cleanTimer := time.NewTicker(time.Minute)
+	cleanTimer := time.NewTicker(time.Second * 5)
 	defer cleanTimer.Stop()
 
 	for {
 		select {
 		case <-cleanTimer.C:
-			// 1. Clean CacheDB
 			ts := time.Now().Add(cachetime)
 			tsn := time.Now()
-			p.Cachedb.M.RLock()
-			for ukey, pdns := range p.Cachedb.Key {
-				if pdns.Lts.Before(ts) {
-					p.Cachedb.M.RUnlock()
-					p.Cachedb.M.Lock()
-					delete(p.Cachedb.Key, ukey)
-					p.Cachedb.M.Unlock()
-					p.Cachedb.M.RLock()
 
-					pdns.Pts = &tsn
-					p.LogChan <- pdns
+			p.Cachedb.M.Lock()
+			for ukey, entry := range p.Cachedb.Key {
+				if entry.LastSeen.Before(ts) {
+					delta := entry.Record.Cnt - entry.PrintedCnt
+					if delta > 0 {
+						outRecord := entry.Record
+						outRecord.Cnt = delta
+						outRecord.Pts = &tsn
+						p.LogChan <- outRecord
+					}
+					delete(p.Cachedb.Key, ukey)
 				}
 			}
-			p.Cachedb.M.RUnlock()
+			p.Cachedb.M.Unlock()
 
-			// 2. Clean ContextDB
 			ts = time.Now().Add(cxttimeout)
+			var cxtKeysToDelete []string
+
 			p.cxt.m.RLock()
 			for ukey, dnscxt := range p.cxt.cxt {
 				if dnscxt.qts.Before(ts) || dnscxt.ats.Before(ts) {
-					p.cxt.m.RUnlock()
-					p.cxt.m.Lock()
-					delete(p.cxt.cxt, ukey)
-					p.cxt.m.Unlock()
-					p.cxt.m.RLock()
+					cxtKeysToDelete = append(cxtKeysToDelete, ukey)
 				}
 			}
 			p.cxt.m.RUnlock()
+
+			if len(cxtKeysToDelete) > 0 {
+				p.cxt.m.Lock()
+				for _, k := range cxtKeysToDelete {
+					delete(p.cxt.cxt, k)
+				}
+				p.cxt.m.Unlock()
+			}
 
 		case <-stopChan:
 			slog.Info("Shutting down DBMaintenance...")

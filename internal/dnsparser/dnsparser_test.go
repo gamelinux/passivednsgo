@@ -141,9 +141,12 @@ func TestBidirectional_Processing(t *testing.T) {
 		if pdns.Sport != 3000 {
 			t.Errorf("Expected Sport 3000, got %d", pdns.Sport)
 		}
-		if pdns.Answer != "8.8.8.8" {
-			t.Errorf("Expected Answer 8.8.8.8, got %s", pdns.Answer)
+
+		// Check for JSON Array format
+		if len(pdns.Answer) == 0 || pdns.Answer[0] != "8.8.8.8" {
+			t.Errorf("Expected Answer [8.8.8.8], got %v", pdns.Answer)
 		}
+
 		if pdns.Qtm < 0.09 || pdns.Qtm > 0.11 {
 			t.Errorf("Latency calculation off. Expected ~0.1, got %f", pdns.Qtm)
 		}
@@ -159,7 +162,7 @@ func TestCache_Deduplication(t *testing.T) {
 	var wg sync.WaitGroup
 	uniChan := make(chan DNSQoR, 10)
 	biChan := make(chan DNSQnR, 10)
-	logChan := make(chan PDNS, 100) // Increase buffer to hold both messages
+	logChan := make(chan PDNS, 100) // Large buffer to hold sequential messages
 
 	parser := NewParser(&wg, uniChan, biChan, logChan)
 
@@ -173,32 +176,31 @@ func TestCache_Deduplication(t *testing.T) {
 	pair := DNSQnR{flow: flow, query: q, answer: a, qts: time.Now(), ats: time.Now()}
 
 	// Send SAME record 3 times
-	biChan <- pair // Trigger immediate Log (Cnt=1) + Cache Add
-	biChan <- pair // Trigger Cache Update (Cnt=2)
-	biChan <- pair // Trigger Cache Update (Cnt=3)
+	biChan <- pair // Packet 1: Immediate Log (Cnt=1), Cache Printed=1, Total=1
+	biChan <- pair // Packet 2: Cache Update -> Total=2
+	biChan <- pair // Packet 3: Cache Update -> Total=3
 
-	close(biChan) // Triggers FlushDB(), which emits Cache (Cnt=3)
+	close(biChan) // Triggers FlushDB -> Delta = Total(3) - Printed(1) = 2. Emits Cnt=2.
 	wg.Wait()
 
 	// Step 1: Check for Immediate Output (Cnt=1)
 	select {
 	case pdns := <-logChan:
 		if pdns.Cnt != 1 {
-			t.Errorf("First packet should have Count 1, got %d", pdns.Cnt)
+			t.Errorf("First packet should have Count 1 (Immediate), got %d", pdns.Cnt)
 		}
 	default:
 		t.Fatal("Expected immediate output for first packet, got nothing")
 	}
 
-	// Step 2: Check for Flushed Output (Cnt=3)
-	// Note: The logic in FlushDB emits the FINAL state of the object.
-	// Since we updated it in place to Cnt=3, the flush should return Cnt=3.
+	// Step 2: Check for Flushed Output (Cnt=2)
+	// We sent 3 total. We printed 1. The remaining delta is 2.
 	select {
 	case pdns := <-logChan:
-		if pdns.Cnt != 3 {
-			t.Errorf("Flushed packet should have aggregated Count 3, got %d", pdns.Cnt)
+		if pdns.Cnt != 2 {
+			t.Errorf("Flushed packet should have aggregated Count 2 (Delta), got %d", pdns.Cnt)
 		}
 	default:
-		t.Fatal("Expected flushed aggregated packet, got nothing")
+		t.Fatal("Expected flushed aggregated packet (Delta), got nothing")
 	}
 }
