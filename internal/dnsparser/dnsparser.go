@@ -61,9 +61,10 @@ type PDNS struct {
 }
 
 type CacheEntry struct {
-	Record     PDNS
-	LastSeen   time.Time
-	PrintedCnt int
+	Record      PDNS
+	LastSeen    time.Time
+	LastPrinted time.Time
+	PrintedCnt  int
 }
 
 type cxtdb struct {
@@ -268,15 +269,9 @@ func (p *Parser) Unidirectional() {
 func (p *Parser) Bidirectional() {
 	defer p.wg.Done()
 	slog.Info("Bidirectional Routine Started...")
-	printTimeOffset, err := time.ParseDuration("-" + config.C.Printtime)
-	if err != nil {
-		slog.Error("Failed to parse Printtime", "error", err)
-		return
-	}
 
 	for entry := range p.BidirectionalChan {
 		currentTimestamp := time.Now()
-		adjustedTimestamp := currentTimestamp.Add(printTimeOffset)
 
 		tsDiff := math.Abs(entry.ats.Sub(entry.qts).Seconds())
 		if tsDiff > 9223370000 {
@@ -315,7 +310,7 @@ func (p *Parser) Bidirectional() {
 			pdnsRecord := createPDNS([]string{}, questionType, 0)
 			if config.C.Cache {
 				cacheKey := questionName + ":" + questionType + ":" + responseCode
-				p.processCacheEntry(cacheKey, pdnsRecord, adjustedTimestamp)
+				p.processCacheEntry(cacheKey, pdnsRecord)
 			} else {
 				p.LogChan <- pdnsRecord
 			}
@@ -341,7 +336,7 @@ func (p *Parser) Bidirectional() {
 				if config.C.Cache {
 					joinedAnswers := strings.Join(answers, ",")
 					cacheKey := questionName + ":" + lastType + ":" + joinedAnswers
-					p.processCacheEntry(cacheKey, pdnsRecord, adjustedTimestamp)
+					p.processCacheEntry(cacheKey, pdnsRecord)
 				} else {
 					p.LogChan <- pdnsRecord
 				}
@@ -352,7 +347,7 @@ func (p *Parser) Bidirectional() {
 	slog.Info("Bidirectional Routine Stopped")
 }
 
-func (p *Parser) processCacheEntry(cacheKey string, pdnsRecord PDNS, adjustedTimestamp time.Time) {
+func (p *Parser) processCacheEntry(cacheKey string, pdnsRecord PDNS) {
 	p.Cachedb.M.Lock()
 	defer p.Cachedb.M.Unlock()
 
@@ -379,9 +374,10 @@ func (p *Parser) processCacheEntry(cacheKey string, pdnsRecord PDNS, adjustedTim
 	} else {
 		p.LogChan <- pdnsRecord
 		p.Cachedb.Key[cacheKey] = &CacheEntry{
-			Record:     pdnsRecord,
-			LastSeen:   time.Now(),
-			PrintedCnt: 1,
+			Record:      pdnsRecord,
+			LastSeen:    time.Now(),
+			LastPrinted: time.Now(),
+			PrintedCnt:  1,
 		}
 	}
 }
@@ -415,37 +411,70 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 		return
 	}
 
+	printDuration, err := time.ParseDuration(config.C.Printtime)
+	if err != nil {
+		slog.Error("Failed to parse Printtime", "error", err)
+		return
+	}
+
 	cxttimeout, err := time.ParseDuration("-" + config.C.CXTtimeout)
 	if err != nil {
 		slog.Error("Failed to parse CXTtimeout", "error", err)
 		return
 	}
 
-	cleanTimer := time.NewTicker(time.Second * 5)
+	checkInterval, err := time.ParseDuration(config.C.CheckInterval)
+	if err != nil {
+		slog.Error("Failed to parse CheckInterval", "error", err)
+		checkInterval = 5 * time.Second
+	}
+
+	cleanTimer := time.NewTicker(checkInterval)
 	defer cleanTimer.Stop()
 
 	for {
 		select {
 		case <-cleanTimer.C:
-			ts := time.Now().Add(cachetime)
-			tsn := time.Now()
+			// Threshold for Eviction
+			evictionThreshold := time.Now().Add(cachetime)
+			now := time.Now()
 
 			p.Cachedb.M.Lock()
+
 			for ukey, entry := range p.Cachedb.Key {
-				if entry.LastSeen.Before(ts) {
+				// A. Check Eviction (Delete)
+				if entry.LastSeen.Before(evictionThreshold) {
 					delta := entry.Record.Cnt - entry.PrintedCnt
 					if delta > 0 {
 						outRecord := entry.Record
 						outRecord.Cnt = delta
-						outRecord.Pts = &tsn
+						outRecord.Pts = &now
 						p.LogChan <- outRecord
 					}
 					delete(p.Cachedb.Key, ukey)
+					continue
+				}
+
+				// B. Check Heartbeat (Print & Keep)
+				timeSincePrint := now.Sub(entry.LastPrinted)
+				if timeSincePrint > printDuration {
+					delta := entry.Record.Cnt - entry.PrintedCnt
+					if delta > 0 {
+						outRecord := entry.Record
+						outRecord.Cnt = delta
+						outRecord.Pts = &now
+						p.LogChan <- outRecord
+
+						// Reset Delta tracking
+						entry.PrintedCnt = entry.Record.Cnt
+						entry.LastPrinted = now
+					}
 				}
 			}
 			p.Cachedb.M.Unlock()
 
-			ts = time.Now().Add(cxttimeout)
+			// CXT Cleanup
+			ts := time.Now().Add(cxttimeout)
 			var cxtKeysToDelete []string
 
 			p.cxt.m.RLock()

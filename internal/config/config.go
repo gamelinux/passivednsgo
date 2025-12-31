@@ -25,7 +25,8 @@ type Config struct {
 	Cache             bool      `json:"cache" mapstructure:"cache"`
 	Loglevel          string    `json:"loglevel" mapstructure:"loglevel"`
 	LogFormat         string    `json:"logformat" mapstructure:"logformat"`
-	ChannelBufferSize int       `json:"channelbuffersize" mapstructure:"channelbuffersize"` // New
+	ChannelBufferSize int       `json:"channelbuffersize" mapstructure:"channelbuffersize"`
+	CheckInterval     string    `json:"checkinterval" mapstructure:"checkinterval"`
 	Shutdown          chan bool `json:"-" mapstructure:"-"`
 	Stop              chan bool `json:"-" mapstructure:"-"`
 }
@@ -50,7 +51,8 @@ func LoadConfig() *Config {
 	viper.SetDefault("logfile", "/var/log/passivednsgo.json")
 	viper.SetDefault("loglevel", "INFO")
 	viper.SetDefault("logformat", "json")
-	viper.SetDefault("channelbuffersize", 10000) // Default buffer size
+	viper.SetDefault("channelbuffersize", 10000)
+	viper.SetDefault("checkinterval", "60s")
 
 	// 2. Define Command Line Flags
 	pflag.String("config", "", "Path to configuration file (optional)")
@@ -71,6 +73,7 @@ func LoadConfig() *Config {
 	pflag.String("loglevel", "INFO", "Log Level [ERROR|WARN|INFO|DEBUG] (Default: INFO)")
 	pflag.String("logformat", "json", "Log Format [json|text] (Default: json)")
 	pflag.Int("channelbuffersize", 10000, "Channel buffer size")
+	pflag.String("checkinterval", "60s", "Interval to check for cache expiration")
 
 	pflag.Parse()
 
@@ -92,6 +95,7 @@ func LoadConfig() *Config {
 	viper.BindPFlag("loglevel", pflag.Lookup("loglevel"))
 	viper.BindPFlag("logformat", pflag.Lookup("logformat"))
 	viper.BindPFlag("channelbuffersize", pflag.Lookup("channelbuffersize"))
+	viper.BindPFlag("checkinterval", pflag.Lookup("checkinterval"))
 
 	// 4. Load Config File
 	cfgFile, _ := pflag.CommandLine.GetString("config")
