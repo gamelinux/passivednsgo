@@ -184,7 +184,7 @@ func formatAnswer(ans layers.DNSResourceRecord) (string, string) {
 	var ansStr string
 	var ansType string
 
-	ansType = ans.Type.String()
+	ansType = dnsstrings.DNSTypeString(ans.Type)
 
 	switch ans.Type {
 	case layers.DNSTypeA, layers.DNSTypeAAAA:
@@ -207,7 +207,7 @@ func formatAnswer(ans layers.DNSResourceRecord) (string, string) {
 		ansStr = strings.Join(parts, "")
 	case layers.DNSTypeSOA:
 		ansStr = fmt.Sprintf("%s %s %d", string(ans.SOA.MName), string(ans.SOA.RName), ans.SOA.Serial)
-	case layers.DNSType(dnsstrings.DNSTypeHTTPS):
+	case layers.DNSType(dnsstrings.DNSTypeHTTPS), layers.DNSType(dnsstrings.DNSTypeSVCB):
 		ansStr = parseHTTPSRecord(ans.Data)
 	default:
 		if len(ans.Data) > 0 {
