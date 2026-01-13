@@ -19,6 +19,7 @@ const (
 	DNSTypeNSEC3      DNSType = 50 // DNSSEC extension with enhanced privacy
 	DNSTypeNSEC3PARAM DNSType = 51 // Parameters for NSEC3 DNSSEC extension
 	DNSTypeRRSIG      DNSType = 46 // DNSSEC signature for secured record sets
+	DNSTypeHTTPS      DNSType = 65 // HTTPS
 )
 
 // DNSTypeString converts a DNSType value to its string representation.
@@ -30,6 +31,8 @@ func DNSTypeString(dnsType layers.DNSType) string {
 		return "AAAA"
 	case layers.DNSTypeCNAME:
 		return "CNAME"
+	case layers.DNSType(DNSTypeHTTPS):
+		return "HTTPS"
 	case layers.DNSTypeHINFO:
 		return "HINFO"
 	case layers.DNSTypeMB:

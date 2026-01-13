@@ -1,9 +1,11 @@
 package dnsparser
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -205,6 +207,8 @@ func formatAnswer(ans layers.DNSResourceRecord) (string, string) {
 		ansStr = strings.Join(parts, "")
 	case layers.DNSTypeSOA:
 		ansStr = fmt.Sprintf("%s %s %d", string(ans.SOA.MName), string(ans.SOA.RName), ans.SOA.Serial)
+	case layers.DNSType(dnsstrings.DNSTypeHTTPS):
+		ansStr = parseHTTPSRecord(ans.Data)
 	default:
 		if len(ans.Data) > 0 {
 			ansStr = fmt.Sprintf("DATA[%d bytes]", len(ans.Data))
@@ -259,7 +263,7 @@ func (p *Parser) Unidirectional() {
 		} else {
 			if len(dns.Questions) > 0 {
 				pdns.Query = string(dns.Questions[0].Name)
-				pdns.Qtype = dns.Questions[0].Type.String()
+				pdns.Qtype = dnsstrings.DNSTypeString(dns.Questions[0].Type)
 				p.LogChan <- pdns
 			}
 		}
@@ -281,7 +285,7 @@ func (p *Parser) Bidirectional() {
 
 		isErrorResponse := entry.answer.ResponseCode != 0
 		questionName := strings.ToLower(string(entry.query.Questions[0].Name))
-		questionType := entry.query.Questions[0].Type.String()
+		questionType := dnsstrings.DNSTypeString(entry.query.Questions[0].Type)
 
 		responseCode := dnsstrings.DNSResponseCodeString(entry.answer.ResponseCode)
 
@@ -496,4 +500,102 @@ func (p *Parser) DBMaintenance(stopChan <-chan bool) {
 			return
 		}
 	}
+}
+
+func parseHTTPSRecord(data []byte) string {
+	if len(data) < 2 {
+		return ""
+	}
+	pos := 0
+
+	// 1. Priority (2 bytes)
+	priority := binary.BigEndian.Uint16(data[pos : pos+2])
+	pos += 2
+
+	// 2. Target Name (Uncompressed, Length-prefixed labels)
+	var targetNameBuilder strings.Builder
+	for pos < len(data) {
+		labelLen := int(data[pos])
+		pos++
+		if labelLen == 0 {
+			break // End of name (Root)
+		}
+		if pos+labelLen > len(data) {
+			return "Malformed Name"
+		}
+		if targetNameBuilder.Len() > 0 {
+			targetNameBuilder.WriteByte('.')
+		}
+		targetNameBuilder.Write(data[pos : pos+labelLen])
+		pos += labelLen
+	}
+	targetName := targetNameBuilder.String()
+	if targetName == "" {
+		targetName = "."
+	}
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%d %s", priority, targetName))
+
+	// 3. Parameters (Key-Length-Value)
+	for pos < len(data) {
+		// Need at least 4 bytes for Key(2) + Len(2)
+		if pos+4 > len(data) {
+			break
+		}
+		key := binary.BigEndian.Uint16(data[pos : pos+2])
+		pos += 2
+		valLen := int(binary.BigEndian.Uint16(data[pos : pos+2]))
+		pos += 2
+
+		if pos+valLen > len(data) {
+			break
+		}
+		val := data[pos : pos+valLen]
+		pos += valLen
+
+		switch key {
+		case 1: // alpn
+			// alpn is a list of length-prefixed strings concatenated
+			var alpns []string
+			p := 0
+			for p < len(val) {
+				l := int(val[p])
+				p++
+				if p+l > len(val) {
+					break
+				}
+				alpns = append(alpns, string(val[p:p+l]))
+				p += l
+			}
+			parts = append(parts, fmt.Sprintf("alpn=\"%s\"", strings.Join(alpns, ",")))
+		case 2: // no-default-alpn
+			parts = append(parts, "no-default-alpn")
+		case 3: // port
+			if len(val) == 2 {
+				port := binary.BigEndian.Uint16(val)
+				parts = append(parts, fmt.Sprintf("port=%d", port))
+			}
+		case 4: // ipv4hint
+			if len(val)%4 == 0 {
+				var ips []string
+				for i := 0; i < len(val); i += 4 {
+					ips = append(ips, net.IP(val[i:i+4]).String())
+				}
+				parts = append(parts, fmt.Sprintf("ipv4hint=\"%s\"", strings.Join(ips, ",")))
+			}
+		case 6: // ipv6hint
+			if len(val)%16 == 0 {
+				var ips []string
+				for i := 0; i < len(val); i += 16 {
+					ips = append(ips, net.IP(val[i:i+16]).String())
+				}
+				parts = append(parts, fmt.Sprintf("ipv6hint=\"%s\"", strings.Join(ips, ",")))
+			}
+		default:
+			// Ignore other keys or handle as generic
+		}
+	}
+
+	return strings.Join(parts, " ")
 }
