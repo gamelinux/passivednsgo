@@ -71,7 +71,7 @@ The default configuration file is located at `/etc/passivednsgo/passivednsgo.yam
 
 ```yaml
 interface: "any"
-bpf: "((ip) or vlan) and port 53"
+bpf: "(port 53) or (ip[6:2] & 0x3fff != 0) or (ip6[6] = 0) or (ip6[6] = 43) or (ip6[6] = 44) or (ip6[6] = 60)"
 capturethreads: 1
 logfile: "/var/log/passivednsgo.json"
 loglevel: "INFO"

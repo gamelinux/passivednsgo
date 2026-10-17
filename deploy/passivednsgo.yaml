@@ -7,9 +7,8 @@
 # Interface to listen on (e.g., eth0, any)
 interface: "any"
 
-# Berkeley Packet Filter (BPF)
-# Standard: "((ip) or vlan) and port 53"
-bpf: "((ip) or vlan) and port 53"
+# Berkeley Packet Filter (BPF). Same default as passivedns.
+bpf: "(port 53) or (ip[6:2] & 0x3fff != 0) or (ip6[6] = 0) or (ip6[6] = 43) or (ip6[6] = 44) or (ip6[6] = 60)"
 
 # Capture Threads (Go routines)
 # Increase this for high-traffic environments (e.g., 4-8)
@@ -52,11 +51,11 @@ unidirectional: false
 cache: true
 
 # Cache Timeouts
-# How often to print cached stats
-printtime: "12h"
+# How often to print sightings that are not written yet
+printtime: "24h"
 
-# How long to keep a record in cache without updates before deleting
-cachetime: "6h"
+# How long to keep a record with no update before deleting it
+cachetime: "12h"
 
 # TCP/UDP Connection tracking timeout (cleanup stale flows)
 cxttimeout: "60s"
