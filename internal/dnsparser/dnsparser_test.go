@@ -149,8 +149,8 @@ func TestBidirectional_Processing(t *testing.T) {
 			t.Errorf("Expected Answer [8.8.8.8], got %v", pdns.Answer)
 		}
 
-		if pdns.Qtm < 0.09 || pdns.Qtm > 0.11 {
-			t.Errorf("Latency calculation off. Expected ~0.1, got %f", pdns.Qtm)
+		if float64(pdns.Qtm) < 0.09 || float64(pdns.Qtm) > 0.11 {
+			t.Errorf("Latency calculation off. Expected ~0.1, got %f", float64(pdns.Qtm))
 		}
 	default:
 		t.Fatal("No PDNS record generated")

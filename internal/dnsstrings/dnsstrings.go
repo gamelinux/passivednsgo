@@ -68,8 +68,36 @@ func DNSTypeString(dnsType layers.DNSType) string {
 		return "WKS"
 	case layers.DNSType(DNSTypeRRSIG):
 		return "RRSIG"
+	case layers.DNSType(DNSTypeDNAME):
+		return "DNAME"
+	case layers.DNSType(DNSTypeDNSKEY):
+		return "DNSKEY"
+	case layers.DNSType(DNSTypeDS):
+		return "DS"
+	case layers.DNSType(DNSTypeNSEC):
+		return "NSEC"
+	case layers.DNSType(DNSTypeNSEC3):
+		return "NSEC3"
+	case layers.DNSType(DNSTypeNSEC3PARAM):
+		return "NSEC3PARAM"
+	case layers.DNSType(17):
+		return "RP"
+	case layers.DNSType(29):
+		return "LOC"
+	case layers.DNSType(35):
+		return "NAPTR"
+	case layers.DNSType(44):
+		return "SSHFP"
+	case layers.DNSType(52):
+		return "TLSA"
+	case layers.DNSType(99):
+		return "SPF"
+	case layers.DNSType(257):
+		return "CAA"
+	case layers.DNSType(255):
+		return "ANY"
 	default:
-		return "UNKNOWN(" + strconv.Itoa(int(dnsType)) + ")"
+		return "TYPE" + strconv.Itoa(int(dnsType))
 	}
 }
 
@@ -100,6 +128,8 @@ func DNSResourceRecordString(record layers.DNSResourceRecord) string {
 // DNSResponseCodeString converts a DNS response code to its string representation.
 func DNSResponseCodeString(code layers.DNSResponseCode) string {
 	switch code {
+	case layers.DNSResponseCodeNoErr:
+		return "NOERROR"
 	case layers.DNSResponseCodeFormErr:
 		return "FORMERR"
 	case layers.DNSResponseCodeServFail:
@@ -120,22 +150,8 @@ func DNSResponseCodeString(code layers.DNSResponseCode) string {
 		return "NOTAUTH"
 	case layers.DNSResponseCodeNotZone:
 		return "NOTZONE"
-	case layers.DNSResponseCodeBadVers:
-		return "BADVERS"
-	case layers.DNSResponseCodeBadKey:
-		return "BADKEY"
-	case layers.DNSResponseCodeBadTime:
-		return "BADTIME"
-	case layers.DNSResponseCodeBadMode:
-		return "BADMODE"
-	case layers.DNSResponseCodeBadName:
-		return "BADNAME"
-	case layers.DNSResponseCodeBadAlg:
-		return "BADALG"
-	case layers.DNSResponseCodeBadTruc:
-		return "BADTRUC"
 	default:
-		return "NOERROR"
+		return fmt.Sprintf("RCODE%d", int(code))
 	}
 }
 

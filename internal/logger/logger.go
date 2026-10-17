@@ -57,7 +57,7 @@ func logEntry(pdnsEntry dnsparser.PDNS) {
 	fileSize += int64(n)
 
 	if fileSize >= parseSize(config.C.Rollover) {
-		rolloverLogFile(*pdnsEntry.Lts)
+		rolloverLogFile(time.Time(pdnsEntry.Lts))
 	}
 }
 

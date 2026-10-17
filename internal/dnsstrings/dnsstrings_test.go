@@ -17,7 +17,8 @@ func TestDNSTypeString(t *testing.T) {
 		{"Type CNAME", layers.DNSTypeCNAME, "CNAME"},
 		{"Type MX", layers.DNSTypeMX, "MX"},
 		{"Type TXT", layers.DNSTypeTXT, "TXT"},
-		{"Type Unknown", layers.DNSType(9999), "UNKNOWN(9999)"},
+		{"Type Unknown", layers.DNSType(9999), "TYPE9999"},
+		{"Type ANY", layers.DNSType(255), "ANY"},
 	}
 
 	for _, tt := range tests {
